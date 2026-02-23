@@ -1,0 +1,6 @@
+/* Simple centered layout and button styles */
+html,body{height:100%;margin:0;font-family:Segoe UI, Roboto, Arial, sans-serif;background:#f5f7fb;color:#111}
+.center{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:2rem}
+.btn{background:#2563eb;color:white;border:none;padding:0.75rem 1.25rem;border-radius:8px;font-size:1rem;cursor:pointer;box-shadow:0 6px 18px rgba(37,99,235,0.12);transition:transform .12s ease,box-shadow .12s ease}
+.btn:hover{transform:translateY(-2px);box-shadow:0 12px 24px rgba(37,99,235,0.16)}
+.btn:active{transform:translateY(0)}

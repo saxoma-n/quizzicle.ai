@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Main Page</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <main class="center">
+    <h1>Main Page</h1>
+    <p>Welcome — click the button to go to the second page.</p>
+    <button id="toPage2" class="btn">Go to Page 2</button>
+  </main>
+  <script>
+    document.getElementById('toPage2').addEventListener('click', function(){
+      window.location.href = 'page2.html';
+    });
+  </script>
+</body>
+</html>
