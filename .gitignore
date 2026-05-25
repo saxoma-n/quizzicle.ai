@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Environment variables (contains API keys and secrets)
+.env
+.env.*
+
+# User data (contains hashed passwords — never commit)
+data/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Build output
+dist/
+
+# Claude Code local settings
+.claude/
