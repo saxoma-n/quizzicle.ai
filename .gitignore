@@ -13,6 +13,16 @@ data/
 *.sqlite
 *.sqlite3
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+.pytest_cache/
+
 # Logs
 logs/
 *.log

@@ -69,15 +69,17 @@ export function AuthProvider({ children }) {
     } catch { return { error: 'Network error. Please try again.' } }
   }, [_save, user])
 
-  const loginWithGoogle = useCallback(async (googleUser) => {
+  const loginWithGoogle = useCallback(async ({ credential }) => {
     try {
-      await fetch('/api/auth/google', {
+      const r = await fetch('/api/auth/google', {
         method: 'POST', credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(googleUser),
+        body: JSON.stringify({ credential }),
       })
+      if (!r.ok) return
+      const d = await r.json()
+      _save(d.user)
     } catch {}
-    _save(googleUser)
   }, [_save])
 
   const signOut = useCallback(async () => {

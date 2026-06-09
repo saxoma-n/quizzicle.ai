@@ -1,6 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import MathText from './MathText'
 
+const SUGGESTIONS = [
+  'What are the first steps?',
+  'Where do I go from here?',
+  'Explain the process of solving this problem.',
+  'Give me a hint without spoiling the answer.',
+]
+
 export default function ChatPanel({ problem }) {
   const [messages, setMessages] = useState([])
   const [input, setInput]       = useState('')
@@ -48,6 +55,11 @@ export default function ChatPanel({ problem }) {
     e.target.style.height = Math.min(e.target.scrollHeight, 110) + 'px'
   }
 
+  const autofill = (text) => {
+    setInput(text)
+    setTimeout(() => inputRef.current?.focus(), 50)
+  }
+
   return (
     <div className="chat-panel">
       <div className="chat-header">
@@ -70,7 +82,7 @@ export default function ChatPanel({ problem }) {
           messages.map((m, i) => (
             <div key={i} className={`chat-msg ${m.role}`}>
               <div className="chat-bubble">
-                {m.role === 'assistant' ? <MathText text={m.content} /> : m.content}
+                <MathText text={m.content} />
               </div>
             </div>
           ))
@@ -86,12 +98,22 @@ export default function ChatPanel({ problem }) {
         <div ref={bottomRef} />
       </div>
 
+      {problem && !loading && (
+        <div className="chat-suggestions">
+          {SUGGESTIONS.map((q) => (
+            <button key={q} className="chat-suggestion-btn" onClick={() => autofill(q)}>
+              {q}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="chat-input-area">
         <textarea
           ref={inputRef}
           className="chat-input"
           rows={1}
-          placeholder={problem ? 'Ask a question… (Enter to send)' : 'Analyze a problem first…'}
+          placeholder={problem ? 'Ask a question… use $...$ for LaTeX (Enter to send)' : 'Analyze a problem first…'}
           value={input}
           disabled={!problem || loading}
           onChange={e => { setInput(e.target.value); autoResize(e) }}

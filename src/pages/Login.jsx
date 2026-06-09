@@ -2,15 +2,6 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 
-function parseJwt(token) {
-  try {
-    const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')
-    return JSON.parse(decodeURIComponent(
-      atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')
-    ))
-  } catch { return null }
-}
-
 export default function Login() {
   const { user, loginWithPassword, register, loginWithGoogle } = useAuth()
   const navigate = useNavigate()
@@ -26,9 +17,12 @@ export default function Login() {
   const googleBtnRef = useRef(null)
   const gisReady     = useRef(false)
 
-  // Redirect if already logged in
+  // Redirect if already logged in — validate next to prevent open redirect
   useEffect(() => {
-    if (user) navigate(searchParams.get('next') || '/', { replace: true })
+    if (!user) return
+    const raw = searchParams.get('next') || '/'
+    const safe = (raw === '/' || /^\/[^/]/.test(raw)) ? raw : '/'
+    navigate(safe, { replace: true })
   }, [user, navigate, searchParams])
 
   // Fetch Google Client ID once
@@ -40,15 +34,7 @@ export default function Login() {
   }, [])
 
   const handleCredentialResponse = useCallback(async (response) => {
-    const payload = parseJwt(response.credential)
-    if (!payload) return
-    await loginWithGoogle({
-      id: 'google_' + payload.sub,
-      name: payload.name,
-      email: payload.email,
-      picture: payload.picture,
-      provider: 'google',
-    })
+    await loginWithGoogle({ credential: response.credential })
   }, [loginWithGoogle])
 
   // Init GIS once client ID and button container are ready

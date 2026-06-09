@@ -4,18 +4,18 @@ import Nav from '../components/Nav'
 import ChatPanel from '../components/ChatPanel'
 import MathText from '../components/MathText'
 import { useApp } from '../contexts/AppContext'
-import { batColor } from '../components/BatteryWidget'
 
 export default function Analyzer() {
   const { battery, deplete, pushProblem } = useApp()
 
+  const [inputMode, setInputMode] = useState('upload')   // 'upload' | 'latex'
+  const [manualLatex, setManualLatex] = useState('')
   const [file, setFile]         = useState(null)
   const [preview, setPreview]   = useState(null)
   const [result, setResult]     = useState(null)
   const [error, setError]       = useState(null)
   const [loading, setLoading]   = useState(false)
   const [dragging, setDragging] = useState(false)
-  const [copied, setCopied]     = useState(false)
   const [depleted, setDepleted] = useState(null)
   const inputRef = useRef(null)
 
@@ -41,9 +41,9 @@ export default function Analyzer() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Server error')
       const newBat = deplete()
-      pushProblem(data.mathProblem)
+      if (data.mathProblem) pushProblem(data.mathProblem)
       setDepleted((oldBat - newBat).toFixed(1))
-      setResult(data.mathProblem)
+      setResult(data.mathProblem || '')
     } catch (err) {
       setError(err.message)
     } finally {
@@ -51,16 +51,22 @@ export default function Analyzer() {
     }
   }
 
-  const copy = () => {
-    navigator.clipboard.writeText(result).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
+  const switchMode = (mode) => {
+    setInputMode(mode)
+    setResult(null); setError(null); setDepleted(null)
+  }
+
+  const useManualProblem = () => {
+    const trimmed = manualLatex.trim()
+    if (!trimmed) return
+    pushProblem(trimmed)
+    setResult(trimmed)
+    setDepleted(null); setError(null)
   }
 
   const clear = () => {
     setFile(null); setPreview(null); setResult(null)
-    setError(null); setCopied(false); setDepleted(null)
+    setError(null); setDepleted(null); setManualLatex('')
     if (inputRef.current) inputRef.current.value = ''
   }
 
@@ -80,7 +86,7 @@ export default function Analyzer() {
           <div className="analyzer-card">
             <div className="card-header">
               <h1>Problem Analyzer</h1>
-              <p className="subtitle">Upload an image and AI will extract and explain the problem.</p>
+              <p className="subtitle">Upload an image and AI will extract the problem for the tutor.</p>
             </div>
 
             {batteryEmpty ? (
@@ -90,46 +96,87 @@ export default function Analyzer() {
               </div>
             ) : (
               <>
-                <div
-                  className={`drop-zone${dragging ? ' dragging' : ''}`}
-                  onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}
-                >
-                  <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp" onChange={onInputChange} />
-                  <div className="drop-icon">🖼️</div>
-                  <p className="drop-text"><span>Click to upload</span> or drag &amp; drop</p>
-                  <p className="drop-hint">JPEG, PNG, WebP — max 5 MB</p>
+                <div className="input-tabs">
+                  <button
+                    className={`input-tab${inputMode === 'upload' ? ' active' : ''}`}
+                    onClick={() => switchMode('upload')}
+                  >
+                    Upload Image
+                  </button>
+                  <button
+                    className={`input-tab${inputMode === 'latex' ? ' active' : ''}`}
+                    onClick={() => switchMode('latex')}
+                  >
+                    Type LaTeX
+                  </button>
                 </div>
 
-                {preview && (
-                  <div className="preview-section">
-                    <img src={preview} alt="Uploaded preview" />
-                    <p className="filename">{file.name}</p>
-                    <button className="detect-btn" onClick={detect} disabled={loading}>
-                      {loading && <span className="spinner" />}
-                      {loading ? 'Analyzing…' : 'Analyze Problem'}
-                    </button>
-                    {!loading && <p className="depletion-note">Uses 5–7% battery per analysis</p>}
+                {inputMode === 'upload' ? (
+                  <>
+                    <div
+                      className={`drop-zone${dragging ? ' dragging' : ''}`}
+                      onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}
+                    >
+                      <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp" onChange={onInputChange} />
+                      <div className="drop-icon">🖼️</div>
+                      <p className="drop-text"><span>Click to upload</span> or drag &amp; drop</p>
+                      <p className="drop-hint">JPEG, PNG, WebP — max 5 MB</p>
+                    </div>
+
+                    {preview && (
+                      <div className="preview-section">
+                        <img src={preview} alt="Uploaded preview" />
+                        <p className="filename">{file.name}</p>
+                        <button className="detect-btn" onClick={detect} disabled={loading}>
+                          {loading && <span className="spinner" />}
+                          {loading ? 'Analyzing…' : 'Analyze Problem'}
+                        </button>
+                        {!loading && <p className="depletion-note">Uses 5–7% battery per analysis</p>}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="latex-input-section">
+                    <textarea
+                      className="latex-textarea"
+                      rows={4}
+                      placeholder={"Type your problem here.\nUse $...$ for inline math and $$...$$ for display math.\nExample: Find the roots of $$x^2 - 5x + 6 = 0$$"}
+                      value={manualLatex}
+                      onChange={e => { setManualLatex(e.target.value); setResult(null); setError(null) }}
+                    />
+                    {manualLatex.trim() && (
+                      <div className="latex-preview">
+                        <div className="latex-preview-label">Preview</div>
+                        <MathText text={manualLatex} />
+                      </div>
+                    )}
+                    {manualLatex.trim() && (
+                      <button className="detect-btn" onClick={useManualProblem}>
+                        Use this problem
+                      </button>
+                    )}
                   </div>
                 )}
               </>
             )}
 
-            {result && (
-              <div className="result-box">
-                <div className="result-label">Explanation</div>
-                <div className="result-text"><MathText text={result} /></div>
-                <button className="copy-btn" onClick={copy}>{copied ? '✓ Copied' : 'Copy'}</button>
-                {depleted && (
-                  <p style={{ marginTop: '0.5rem', fontSize: '0.76rem', color: '#888' }}>
-                    Battery used: {depleted}% — now at {Math.round(battery)}%
-                  </p>
-                )}
-              </div>
+            {result !== null && result !== undefined && (
+              result ? (
+                <div className="result-success">
+                  <span className="result-success-icon">✓</span>
+                  {depleted ? 'Problem detected' : 'Problem loaded'} — ask the tutor in the chat!
+                  {depleted && (
+                    <span className="result-depletion"> (Battery used: {depleted}%)</span>
+                  )}
+                </div>
+              ) : (
+                <div className="error-box">No math problem detected in this image.</div>
+              )
             )}
 
             {error && <div className="error-box">Error: {error}</div>}
 
-            {(file || result || error) && !batteryEmpty && (
+            {(file || result || error || manualLatex) && !batteryEmpty && (
               <button className="clear-link" onClick={clear}>Clear &amp; start over</button>
             )}
           </div>

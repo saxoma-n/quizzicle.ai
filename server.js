@@ -1,14 +1,23 @@
 require('dotenv').config();
-const express = require('express');
-const multer  = require('multer');
-const Anthropic = require('@anthropic-ai/sdk');
-const path    = require('path');
-const fs      = require('fs');
-const crypto  = require('crypto');
-const session = require('express-session');
-const bcrypt  = require('bcryptjs');
 
-const MODEL = 'claude-opus-4-6';
+if (!process.env.SESSION_SECRET) {
+  console.error('FATAL: SESSION_SECRET environment variable is not set.');
+  process.exit(1);
+}
+
+const express   = require('express');
+const multer    = require('multer');
+const path      = require('path');
+const fs        = require('fs');
+const crypto    = require('crypto');
+const session   = require('express-session');
+const bcrypt    = require('bcryptjs');
+const rateLimit = require('express-rate-limit');
+const helmet    = require('helmet');
+const { OAuth2Client } = require('google-auth-library');
+
+const SOLVER_URL   = 'http://localhost:3001';
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // ── User store (JSON file) ────────────────────────────────────────────────────
 const DATA_DIR   = path.join(__dirname, 'data');
@@ -28,14 +37,39 @@ function saveUsers(users) {
 // ── Express setup ─────────────────────────────────────────────────────────────
 const app = express();
 
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'quizzicle-dev-secret-change-in-prod',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: 'lax', maxAge: 7 * 24 * 60 * 60 * 1000 },
+app.use(helmet({
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc:              ["'self'"],
+      scriptSrc:               ["'self'", 'https://accounts.google.com'],
+      styleSrc:                ["'self'", "'unsafe-inline'"],
+      imgSrc:                  ["'self'", 'data:', 'https://*.googleusercontent.com'],
+      connectSrc:              ["'self'", 'https://accounts.google.com'],
+      frameSrc:                ["'none'"],
+      frameAncestors:          ["'none'"],
+      objectSrc:               ["'none'"],
+      baseUri:                 ["'self'"],
+      formAction:              ["'self'"],
+      upgradeInsecureRequests: [],
+    },
+  },
 }));
 
-app.use(express.json());
+app.use(session({
+  secret: process.env.SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: process.env.NODE_ENV === 'production',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  },
+}));
+
+app.use(express.json({ limit: '100kb' }));
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -49,18 +83,54 @@ const upload = multer({
 
 app.use(express.static(path.join(__dirname, 'dist')));
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts, please try again later.' },
+});
+
+function requireAuth(req, res, next) {
+  if (!req.session?.user) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  next();
+}
+
+// ── Solver proxy helper ───────────────────────────────────────────────────────
+
+async function proxyToSolver(res, path, body) {
+  try {
+    const pyRes = await fetch(`${SOLVER_URL}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await pyRes.json();
+    if (!pyRes.ok) return res.status(pyRes.status).json(data);
+    res.json(data);
+  } catch (err) {
+    console.error(`Solver proxy error (${path}):`, err.message);
+    res.status(502).json({ error: 'Math solver service unavailable' });
+  }
+}
 
 // ── Auth routes ───────────────────────────────────────────────────────────────
 
-app.post('/api/auth/register', async (req, res) => {
+const EMAIL_RE    = /^[^\s@]{1,64}@[^\s@]{1,255}$/;
+const USERNAME_RE = /^[\w\-. ]{2,30}$/;
+
+app.post('/api/auth/register', loginLimiter, async (req, res) => {
   const { email, username, password } = req.body;
   if (!email || !username || !password)
     return res.status(400).json({ error: 'Email, username, and password are required.' });
+  if (!EMAIL_RE.test(email))
+    return res.status(400).json({ error: 'Invalid email address.' });
   if (password.length < 8)
     return res.status(400).json({ error: 'Password must be at least 8 characters.' });
-  if (username.trim().length < 2 || username.trim().length > 30)
-    return res.status(400).json({ error: 'Username must be 2–30 characters.' });
+  if (!USERNAME_RE.test(username.trim()))
+    return res.status(400).json({ error: 'Username may only contain letters, numbers, spaces, hyphens, underscores, and periods (2–30 characters).' });
 
   const users = loadUsers();
   if (users.find(u => u.email === email.toLowerCase() && u.provider === 'local'))
@@ -72,14 +142,19 @@ app.post('/api/auth/register', async (req, res) => {
   saveUsers(users);
 
   const user = { id, email: email.toLowerCase(), name: username.trim(), picture: null, provider: 'local' };
-  req.session.user = user;
-  res.json({ user });
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: 'Session error.' });
+    req.session.user = user;
+    res.json({ user });
+  });
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', loginLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password)
     return res.status(400).json({ error: 'Email and password are required.' });
+  if (!EMAIL_RE.test(email))
+    return res.status(400).json({ error: 'Invalid email address.' });
 
   const found = loadUsers().find(u => u.email === email.toLowerCase() && u.provider === 'local');
   if (!found) return res.status(401).json({ error: 'Invalid email or password.' });
@@ -88,8 +163,11 @@ app.post('/api/auth/login', async (req, res) => {
   if (!match) return res.status(401).json({ error: 'Invalid email or password.' });
 
   const user = { id: found.id, email: found.email, name: found.username, picture: null, provider: 'local' };
-  req.session.user = user;
-  res.json({ user });
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: 'Session error.' });
+    req.session.user = user;
+    res.json({ user });
+  });
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -104,15 +182,29 @@ app.get('/api/auth/me', (req, res) => {
   }
 });
 
-app.post('/api/auth/google', (req, res) => {
-  const { id, email, name, picture } = req.body;
-  if (!id || !email) return res.status(400).json({ error: 'Missing user data.' });
+app.post('/api/auth/google', loginLimiter, async (req, res) => {
+  const { credential } = req.body;
+  if (!credential) return res.status(400).json({ error: 'Missing credential.' });
+
+  let payload;
+  try {
+    const ticket = await googleClient.verifyIdToken({
+      idToken: credential,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+    payload = ticket.getPayload();
+  } catch {
+    return res.status(401).json({ error: 'Invalid Google credential.' });
+  }
+
+  const id = 'google_' + payload.sub;
+  const { email, name, picture } = payload;
 
   const users = loadUsers();
   const idx   = users.findIndex(u => u.id === id);
   let username = name;
   if (idx >= 0) {
-    username = users[idx].username; // preserve any custom name the user set
+    username = users[idx].username;
     users[idx] = { ...users[idx], email, picture };
   } else {
     users.push({ id, email, username: name, picture, provider: 'google', createdAt: Date.now() });
@@ -120,15 +212,18 @@ app.post('/api/auth/google', (req, res) => {
   saveUsers(users);
 
   const user = { id, email, name: username, picture, provider: 'google' };
-  req.session.user = user;
-  res.json({ user });
+  req.session.regenerate((err) => {
+    if (err) return res.status(500).json({ error: 'Session error.' });
+    req.session.user = user;
+    res.json({ user });
+  });
 });
 
-app.post('/api/auth/update-username', (req, res) => {
+app.post('/api/auth/update-username', loginLimiter, (req, res) => {
   if (!req.session?.user) return res.status(401).json({ error: 'Not authenticated.' });
   const { username } = req.body;
-  if (!username || username.trim().length < 2 || username.trim().length > 30)
-    return res.status(400).json({ error: 'Username must be 2–30 characters.' });
+  if (!username || !USERNAME_RE.test(username.trim()))
+    return res.status(400).json({ error: 'Username may only contain letters, numbers, spaces, hyphens, underscores, and periods (2–30 characters).' });
 
   const users = loadUsers();
   const i = users.findIndex(u => u.id === req.session.user.id);
@@ -139,89 +234,22 @@ app.post('/api/auth/update-username', (req, res) => {
   res.json({ user: req.session.user });
 });
 
-// ── AI routes ─────────────────────────────────────────────────────────────────
+// ── AI routes (proxied to Python solver) ─────────────────────────────────────
 
-app.post('/api/chat', async (req, res) => {
-  const { problem, messages } = req.body;
-  if (!Array.isArray(messages) || messages.length === 0)
-    return res.status(400).json({ error: 'No messages provided.' });
-
-  const systemText = problem
-    ? `You are a friendly, encouraging math tutor. The student is working on this problem:\n\n${problem}\n\nHelp them understand and solve it. Guide them step by step, explain concepts clearly, and keep responses concise.`
-    : `You are a friendly math tutor. Help the student with their math questions.`;
-
-  // Cache conversation history at the last assistant turn before the new user message
-  const lastAssistantIdx = messages.reduce((acc, m, i) => m.role === 'assistant' ? i : acc, -1);
-  const messagesForApi = messages.map((m, i) => {
-    if (i === lastAssistantIdx) {
-      return { role: m.role, content: [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }] };
-    }
-    return { role: m.role, content: m.content };
-  });
-
-  try {
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 1024,
-      system: [{ type: 'text', text: systemText, cache_control: { type: 'ephemeral' } }],
-      messages: messagesForApi,
-    });
-    res.json({ reply: response.content[0].text.trim() });
-  } catch (err) {
-    console.error('Chat error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+app.post('/api/chat', requireAuth, async (req, res) => {
+  await proxyToSolver(res, '/api/chat', req.body);
 });
 
-app.post('/api/extract-math', upload.single('image'), async (req, res) => {
+app.post('/api/extract-math', requireAuth, upload.single('image'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No image file provided.' });
-
-  const base64Image = req.file.buffer.toString('base64');
-  const mediaType   = req.file.mimetype;
-
-  try {
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 512,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64Image } },
-          { type: 'text', text: 'You are a math tutor. Extract the math problem from the image and provide a completely accurate and detailed explanation on how to solve the problem' },
-        ],
-      }],
-    });
-    res.json({ mathProblem: response.content[0].text.trim() });
-  } catch (err) {
-    console.error('Anthropic API error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+  await proxyToSolver(res, '/api/extract-math', {
+    image_base64: req.file.buffer.toString('base64'),
+    media_type: req.file.mimetype,
+  });
 });
 
-app.post('/api/generate-practice', async (req, res) => {
-  const { recentProblems } = req.body;
-  if (!recentProblems?.length) return res.status(400).json({ error: 'No problem history provided.' });
-
-  const list = recentProblems.slice(0, 10).map((p, i) => `${i + 1}. ${p}`).join('\n');
-
-  try {
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 512,
-      messages: [{
-        role: 'user',
-        content: `You are a math tutor. A student has been working on these problems:\n${list}\n\nGenerate 3 new practice problems of similar type and difficulty. Each must have a single, unambiguous, and different numerical answer (integer or decimal with at most 2 decimal places) for each problem.\n\nRespond with ONLY a raw JSON array — no markdown, no extra text:\n[{"question":"...","answer":"..."},{"question":"...","answer":"..."},{"question":"...","answer":"..."}]`,
-      }],
-    });
-
-    const text = response.content[0].text.trim();
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) throw new Error('Model did not return a valid JSON array');
-    res.json({ problems: JSON.parse(jsonMatch[0]) });
-  } catch (err) {
-    console.error('Practice generation error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+app.post('/api/generate-practice', requireAuth, async (req, res) => {
+  await proxyToSolver(res, '/api/generate-practice', req.body);
 });
 
 app.get('/api/config', (req, res) => {
