@@ -4,6 +4,7 @@ import Nav from '../components/Nav'
 import ChatPanel from '../components/ChatPanel'
 import MathText from '../components/MathText'
 import { useApp } from '../contexts/AppContext'
+import { batColor } from '../components/BatteryWidget'
 
 export default function Analyzer() {
   const { battery, deplete, pushProblem } = useApp()
@@ -71,6 +72,7 @@ export default function Analyzer() {
   }
 
   const batteryEmpty = battery <= 0
+  const batC = batColor(battery)
 
   return (
     <>
@@ -87,6 +89,16 @@ export default function Analyzer() {
             <div className="card-header">
               <h1>Problem Analyzer</h1>
               <p className="subtitle">Upload an image and AI will extract the problem for the tutor.</p>
+            </div>
+
+            <div className="bat-card bat-card-nested">
+              <div className="bat-card-header">
+                <span className="bat-card-title">Battery</span>
+                <span className="bat-card-pct" style={{ color: batC }}>{Math.round(battery)}%</span>
+              </div>
+              <div className="bat-track">
+                <div className="bat-track-fill" style={{ width: battery + '%', background: batC }} />
+              </div>
             </div>
 
             {batteryEmpty ? (
